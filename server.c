@@ -281,6 +281,116 @@ void signal_handler(){
 	}
 }
 
+// handled different methods
+void routing(char route[],char method[],int connfd,char queryData[],char fileName[],char buff[],int query){
+	// route based on the css	
+	if(strstr(route,".css") != NULL){
+		send_css(connfd,fileName);	
+	}
+	//query parameters given with GET
+	else if(strcmp(method,"GET") == 0 && query == 1){ 
+		handle_post_request(connfd,queryData,fileName);			
+	}	
+	//GET without query parameters		
+	else if(strcmp(method,"GET") == 0){
+		handle_get_request(connfd,fileName);			
+	}
+	//POST method 	
+	else if(strcmp(method,"POST") == 0){		
+		// content length extracted for POST 
+		char* content_ptr = strstr(buff,"Content-Length:");	
+		if(content_ptr != NULL){
+			int content_length; 
+			// content length extracted from HTTP message 
+			sscanf(content_ptr, "Content-Length: %d", &content_length);
+			content_ptr = strstr(buff,"\r\n\r\n"); //http header and message body are seperated using \r\n\r\n
+			
+			char content[content_length+1];
+			//getting content from message body
+			sscanf(content_ptr, "\r\n\r\n%[^\n]s", content);
+			content[content_length] = '\0';
+
+			//data is decoded 
+			url_decode(content);
+			
+			//post method handler
+			handle_post_request(connfd, content,fileName);
+		}
+		else {
+			// Handle POST request without Content-Length header
+			send_response(connfd, "411 Length Required", "text/plain", "Content-Length header is required for POST");
+		}		
+	}
+	else{
+		// Handle Non implemented methods
+		send_response(connfd, "501 Not Implemented", "text/plain", "Method Not Implemented");
+	}
+
+}
+
+
+//simple webserver with support to http methods such as get as well as post (basic functionalities)
+void simple_webserver(int connfd){
+	int c = 0;
+	char buff[1024];
+	char method[10];// to store the method name
+	// default route to be parsed
+	char fileName[100] = "output.txt";
+	char route[100];//route data
+	char queryData[1024];// query parameters data in GET
+	int query = 0;// whether query parametes is requested or not
+
+	// receiving the message from the client either get request or post request
+	if((c = recv(connfd,buff,sizeof(buff),0)) == -1){
+		printf("msg not received\n"); 
+		exit(0); 
+	}
+	buff[c] = '\0';
+
+	printf("%s",buff);
+	sscanf(buff, "%s /%s", method,route);
+		
+
+	// Different path other than default
+	if(strcmp(route,"HTTP/1.1")){
+		char* queryPointer = strstr(route,"?");
+		// query parameters are not given
+		if(queryPointer == NULL){
+			strcpy(fileName,route);
+		}
+		else{
+			//query parameters are given
+			sscanf(route, "%[^?]s", fileName);
+			query = 1;
+			if (queryPointer != NULL) {
+				// Move to the actual query string
+				queryPointer++;
+
+				// Parse query parameters
+				parse_query_parameters(queryPointer,queryData);
+			 }
+		
+		}
+	}
+	//query parameters given with default file
+	else if(strcmp(route,"?")==0){
+		char* queryPointer = strstr(route,"?");
+		query = 1;
+		if (queryPointer != NULL) {
+			// Move to the actual query string
+			queryPointer++;
+
+			// Parse query parameters
+			parse_query_parameters(queryPointer,queryData);
+		}
+	}
+	
+	routing(route,method,connfd,queryData,fileName,buff,query);
+	
+	close(connfd); 
+	exit(0);
+}
+
 
 
 int main(){ 
@@ -310,89 +420,8 @@ int main(){
 		int fk=fork(); 
 		if (fk==0){ 
 			close(sockfd);
+			simple_webserver(connfd);
 			
-			int c = 0;
-			char buff[1024];
-			// receiving the message from the client either get request or post request
-			if((c = recv(connfd,buff,sizeof(buff),0)) == -1){
-				printf("msg not received\n"); 
-				exit(0); 
-			}
-			
-			buff[c] = '\0';
- 
- 			char method[10];
-			char fileName[100] = "output.txt";
-			char route[100];
-			char queryData[1024];
-			int query = 0;
-			printf("%s",buff);
-        		sscanf(buff, "%s /%s", method,route);
-				
-
-			if(strcmp(route,"HTTP/1.1")){
-				char* queryPointer = strstr(route,"?");
-				if(queryPointer == NULL){
-					strcpy(fileName,route);
-				}
-				else{
-					sscanf(route, "%[^?]s", fileName);
-					query = 1;
-					if (queryPointer != NULL) {
-						// Move to the actual query string
-						queryPointer++;
-
-						// Parse query parameters
-						parse_query_parameters(queryPointer,queryData);
-					 }
-				
-				}
-			}
-			else if(strcmp(route,"?")==0){
-				char* queryPointer = strstr(route,"?");
-				query = 1;
-				if (queryPointer != NULL) {
-					// Move to the actual query string
-					queryPointer++;
-
-					// Parse query parameters
-					parse_query_parameters(queryPointer,queryData);
-				}
-			}
-			
-					
-			if(strstr(route,".css") != NULL){
-				send_css(connfd,fileName);	
-			}
-			else if(strcmp(method,"GET") == 0 && query == 1){
-				handle_post_request(connfd,queryData,fileName);			
-			}			
-			else if(strcmp(method,"GET") == 0){
-				handle_get_request(connfd,fileName);			
-			}else if(strcmp(method,"POST") == 0){			
-				char* content_ptr = strstr(buff,"Content-Length:");	
-				if(content_ptr != NULL){
-					int content_length;
-					sscanf(content_ptr, "Content-Length: %d", &content_length);
-					content_ptr = strstr(buff,"\r\n\r\n");
-					
-					char content[content_length+1];
-					sscanf(content_ptr, "\r\n\r\n%[^\n]s", content);
-					content[content_length] = '\0';
-					url_decode(content);
-					handle_post_request(connfd, content,fileName);
-				}
-				else {
-					// Handle POST request without Content-Length header
-					send_response(connfd, "411 Length Required", "text/plain", "Content-Length header is required for POST");
-	    			}		
-			}
-			else{
-				send_response(connfd, "501 Not Implemented", "text/plain", "Method Not Implemented");
-			}
-		
-			close(connfd); 
-			exit(0);
 		} 
 		close(connfd);  
 	} 
