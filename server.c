@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <time.h> 
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #define SA struct sockaddr 
 #define BACKLOG 10 
@@ -21,16 +23,44 @@
 
 int flag = 0;
 
-void send_response(int client_socket,const char* status, const char* content_type,const char* content);
+void send_response(SSL* ssl,const char* status, const char* content_type,const char* content);
 
+SSL_CTX* create_SSL_context() {
+    SSL_CTX* ctx;
+
+    // Initialize OpenSSL
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();
+
+    // Create a new SSL context
+    ctx = SSL_CTX_new(SSLv23_server_method());
+    if (ctx == NULL) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    // Load the server certificate and private key
+    if (SSL_CTX_use_certificate_file(ctx, "server.crt", SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    if (SSL_CTX_use_PrivateKey_file(ctx, "server.key", SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    return ctx;
+}
 
 //send css is used to only the css file.
-void send_css(int client_socket,char fileName[100]){
+void send_css(SSL* ssl,char fileName[100]){
 	 FILE *file = fopen(fileName, "r");
 	 // open css file
 	 if (file == NULL) {
 		perror("Error opening file");
-		send_response(client_socket, "404 Not Found", "text/plain", "File Not Found");
+		send_response(ssl, "404 Not Found", "text/plain", "File Not Found");
 		flag = 1;
 		return;
 	 }
@@ -41,24 +71,24 @@ void send_css(int client_socket,char fileName[100]){
 	 fread(buffer, 1, sizeof(buffer), file);
 		
 	 //send the data to the client
-	 send_response(client_socket, "200 OK", "text/css", buffer);
+	 send_response(ssl, "200 OK", "text/css", buffer);
     	 fclose(file);
 }
 
 // defining HTTP header and send data to the client
-void send_response(int client_socket,const char* status, const char* content_type,const char* content){
+void send_response(SSL* ssl,const char* status, const char* content_type,const char* content){
 	char response[2048]; 
 	sprintf(response, "HTTP/1.1 %s\r\nContent-Type: %s\r\n\r\n%s", status, content_type, content);
-	send(client_socket, response, strlen(response), 0);
+	SSL_write(ssl, response, strlen(response));
 }
 
 // handle saving of data into the file 
-void store_data(int client_socket,char content[1024],char fileName[100]){
+void store_data(SSL* ssl,char content[1024],char fileName[100]){
 	    // Open a file for writing
 	    FILE *file = fopen(fileName, "a"); // Open in append mode to append new data
 	    if (file == NULL) {
 		perror("Error opening file");
-		send_response(client_socket, "500 Internal Server Error", "text/plain", "Error opening file");
+		send_response(ssl, "500 Internal Server Error", "text/plain", "Error opening file");
 		flag = 1;
 		return;
 	    }
@@ -71,12 +101,12 @@ void store_data(int client_socket,char content[1024],char fileName[100]){
 }
 
 // retrieve all data from the file in the list form
-void getalldata(int client_socket,char content[1024],char fileName[100]){
+void getalldata(SSL* ssl,char content[1024],char fileName[100]){
 	    // Open the file for reading
 	    FILE *file = fopen(fileName, "r");
 	    if (file == NULL) {
 		perror("Error opening file");
-		send_response(client_socket, "500 Internal Server Error", "text/plain", "Error opening file");
+		send_response(ssl, "500 Internal Server Error", "text/plain", "Error opening file");
 		flag = 1;
 		return;
 	    }
@@ -94,11 +124,11 @@ void getalldata(int client_socket,char content[1024],char fileName[100]){
 }
 
 //handling get request without query parameters
-void handle_get_request(int client_socket,char fileName[100]) {
+void handle_get_request(SSL* ssl,char fileName[100]) {
     char buff[1024];
 	
     // get all data from the specified file
-    getalldata(client_socket,buff,fileName); 
+    getalldata(ssl,buff,fileName); 
     if(flag == 1)
 	return;
     
@@ -106,12 +136,12 @@ void handle_get_request(int client_socket,char fileName[100]) {
     char html_content[1024];
     sprintf(html_content,"<html><head><link rel=\"stylesheet\" href=\"styles.css\"></head><body><ul>%s</ul></body></html>",buff);
   
-    send_response(client_socket, "200 OK", "text/html", html_content);
+    send_response(ssl, "200 OK", "text/html", html_content);
 }
 
 
 // handle post request and get request with query parameters
-void handle_post_request(int client_socket, char content[],char fileName[100]) {
+void handle_post_request(SSL* ssl, char content[],char fileName[100]) {
     char* p;
 
     // replace '=' with ':'
@@ -119,12 +149,12 @@ void handle_post_request(int client_socket, char content[],char fileName[100]) {
     	*p = ':';
     }
     char response_content[1024];
-    store_data(client_socket,content,fileName);
+    store_data(ssl,content,fileName);
     if(flag == 1)
 	return;
     // HTML  content
     sprintf(response_content, "<html><head><link rel=\"stylesheet\" href=\"styles.css\"></head><body><h1>Data is posted</h1><p>%s</p></body></html>", content);
-    send_response(client_socket, "200 OK", "text/html", response_content);
+    send_response(ssl, "200 OK", "text/html", response_content);
 }
 
 
@@ -282,18 +312,18 @@ void signal_handler(){
 }
 
 // handled different methods
-void routing(char route[],char method[],int connfd,char queryData[],char fileName[],char buff[],int query){
+void routing(char route[],char method[],SSL* ssl,char queryData[],char fileName[],char buff[],int query){
 	// route based on the css	
 	if(strstr(route,".css") != NULL){
-		send_css(connfd,fileName);	
+		send_css(ssl,fileName);	
 	}
 	//query parameters given with GET
 	else if(strcmp(method,"GET") == 0 && query == 1){ 
-		handle_post_request(connfd,queryData,fileName);			
+		handle_post_request(ssl,queryData,fileName);			
 	}	
 	//GET without query parameters		
 	else if(strcmp(method,"GET") == 0){
-		handle_get_request(connfd,fileName);			
+		handle_get_request(ssl,fileName);			
 	}
 	//POST method 	
 	else if(strcmp(method,"POST") == 0){		
@@ -314,23 +344,23 @@ void routing(char route[],char method[],int connfd,char queryData[],char fileNam
 			url_decode(content);
 			
 			//post method handler
-			handle_post_request(connfd, content,fileName);
+			handle_post_request(ssl, content,fileName);
 		}
 		else {
 			// Handle POST request without Content-Length header
-			send_response(connfd, "411 Length Required", "text/plain", "Content-Length header is required for POST");
+			send_response(ssl, "411 Length Required", "text/plain", "Content-Length header is required for POST");
 		}		
 	}
 	else{
 		// Handle Non implemented methods
-		send_response(connfd, "501 Not Implemented", "text/plain", "Method Not Implemented");
+		send_response(ssl, "501 Not Implemented", "text/plain", "Method Not Implemented");
 	}
 
 }
 
 
 //simple webserver with support to http methods such as get as well as post (basic functionalities)
-void simple_webserver(int connfd){
+void simple_webserver(SSL* ssl,int connfd){
 	int c = 0;
 	char buff[1024];
 	char method[10];// to store the method name
@@ -341,7 +371,7 @@ void simple_webserver(int connfd){
 	int query = 0;// whether query parametes is requested or not
 
 	// receiving the message from the client either get request or post request
-	if((c = recv(connfd,buff,sizeof(buff),0)) == -1){
+	if((c = SSL_read(ssl, buff, sizeof(buff))) == -1){
 		printf("msg not received\n"); 
 		exit(0); 
 	}
@@ -385,7 +415,7 @@ void simple_webserver(int connfd){
 		}
 	}
 	
-	routing(route,method,connfd,queryData,fileName,buff,query);
+	routing(route,method,ssl,queryData,fileName,buff,query);
 	
 	close(connfd); 
 	exit(0);
@@ -394,7 +424,10 @@ void simple_webserver(int connfd){
 
 
 int main(){ 
-	int sockfd,connfd; 
+	int sockfd,connfd;
+	//create SSL context
+	SSL_CTX* ctx = create_SSL_context();
+ 
 	
 	//server creation .
 	sockfd = server_creation();
@@ -408,7 +441,7 @@ int main(){
 		connfd = connection_accepting(sockfd);
 			
 		if(connfd == -1){
-			continue;
+			break;
 		}
 
 		// fork is used for concurrent server.
@@ -420,11 +453,22 @@ int main(){
 		int fk=fork(); 
 		if (fk==0){ 
 			close(sockfd);
-			simple_webserver(connfd);
-			
+			// Create an SSL connection
+			SSL* ssl = SSL_new(ctx);
+			SSL_set_fd(ssl, connfd);
+			 // Perform SSL handshake
+			if (SSL_accept(ssl) <= 0) {
+			    ERR_print_errors_fp(stderr);
+			    close(connfd);
+			    continue;
+			}
+			simple_webserver(ssl,connfd);
+			SSL_shutdown(ssl);
+        		SSL_free(ssl);
 		} 
 		close(connfd);  
 	} 
+	SSL_CTX_free(ctx);
 	close(sockfd); 
 	return 0;
 } 
