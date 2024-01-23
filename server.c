@@ -20,12 +20,18 @@
 
 #define SA struct sockaddr 
 #define BACKLOG 10 
-#define PORT "8050"
+#define PORT "443"
 #define NUM_FDS 2
 
 int flag = 0;
 
 void send_response(SSL* ssl,const char* status, const char* content_type,const char* content);
+
+void cleanup(SSL *ssl,struct pollfd* pollfds) {
+    SSL_free(ssl);
+    close(pollfds->fd);
+    pollfds->fd *= -1;
+}
 
 SSL_CTX* create_SSL_context() {
     SSL_CTX* ctx;
@@ -81,7 +87,7 @@ void send_css(SSL* ssl,char fileName[100]){
 void send_response(SSL* ssl,const char* status, const char* content_type,const char* content){
 	char response[2048]; 
 	sprintf(response, "HTTP/1.1 %s\r\nContent-Type: %s\r\n\r\n%s", status, content_type, content);
-	printf("#%d\n",SSL_write(ssl, response, strlen(response)));
+	SSL_write(ssl, response, strlen(response));
 }
 
 // handle saving of data into the file 
@@ -207,20 +213,20 @@ void parse_query_parameters(const char *query_string,char content[1024]) {
     content[len-1] = '\0';
 }
 
-
-//it helps us to handle all the dead process which was created with the fork system call.
-void sigchld_handler(int s){
-	int saved_errno = errno;
-	while(waitpid(-1,NULL,WNOHANG) > 0);
-	errno = saved_errno;
-}
-
 // give IPV4 or IPV6  based on the family set in the sa
 void *get_in_addr(struct sockaddr *sa){
 	if(sa->sa_family == AF_INET){
 		return &(((struct sockaddr_in*)sa)->sin_addr);	
 	}
 	return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+
+// give PORT  based on the family set in the sa
+int get_in_port(struct sockaddr *sa){
+	if(sa->sa_family == AF_INET){
+		return (((struct sockaddr_in*)sa)->sin_port);	
+	}
+	return (((struct sockaddr_in6*)sa)->sin6_port);
 }
 
 // this is the code for server creation. here i have used TCP instead of UDP because i need all the data without any loss. if we use UDP we
@@ -298,6 +304,9 @@ void connection_accepting(int sockfd, struct pollfd **pollfds, int *maxfds, int 
 
         *maxfds += NUM_FDS;
     }
+    // Printing the client name
+    inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr *)&their_addr), s, sizeof(s));    
+    
     (*numfds)++;
 
     ((*pollfds) + *numfds - 1)->fd = connfd;
@@ -318,8 +327,7 @@ void connection_accepting(int sockfd, struct pollfd **pollfds, int *maxfds, int 
     // Store the SSL structure pointer in the array
     (*sslfds)[*numfds - 1] = ssl;
 
-    // Printing the client name
-    inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr *)&their_addr), s, sizeof(s));
+    
     printf("\nserver: got connection from %s\n", s);
 }
 
@@ -384,10 +392,20 @@ void simple_webserver(SSL* ssl,struct pollfd* pollfds){
 	int query = 0;// whether query parametes is requested or not
 
 	// receiving the message from the client either get request or post request
-	if((c = SSL_read(ssl, buff, sizeof(buff))) == -1){
-		printf("msg not received\n"); 
-		exit(0); 
-	}
+	c = SSL_read(ssl, buff, sizeof(buff));
+	if (c <= 0) {
+		if (c == 0) {
+		    // Connection closed by the client
+		    printf("Client closed connection\n");
+		    cleanup(ssl, pollfds);
+		    return;
+		} else {
+		    perror("SSL_read");
+		    cleanup(ssl, pollfds);
+		    exit(EXIT_FAILURE);
+		}
+	 }
+	 
 	buff[c] = '\0';
 
 	printf("%s",buff);
@@ -429,10 +447,7 @@ void simple_webserver(SSL* ssl,struct pollfd* pollfds){
 	}
 	
 	routing(route,method,ssl,queryData,fileName,buff,query);
-	SSL_shutdown(ssl);
-	SSL_free(ssl);
-	close(pollfds->fd); // connection is closed for that client
-	pollfds->fd *= -1; // make it negative to ignore it in the futureclose(pollfds->fd); 
+	cleanup(ssl,pollfds);
 }
 
 
@@ -496,4 +511,6 @@ int main(){
 	close(sockfd); 
 	return 0;
 } 
+
+
 
